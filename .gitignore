@@ -1,0 +1,82 @@
+# Prerequisites
+#*.d
+
+# Object files
+*.o
+#*.ko
+*.obj
+*.elf
+
+# Linker output
+*.ilk
+#*.map
+*.exp
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Libraries
+*.lib
+*.a
+*.la
+*.lo
+
+# Shared objects (inc. Windows DLLs)
+*.dll
+*.so
+#*.so.*
+*.dylib
+
+# Executables
+*.exe
+*.out
+*.app
+*.i*86
+*.x86_64
+*.hex
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Kernel Module Compile Results
+#*.mod*
+*.cmd
+.tmp_versions/
+modules.order
+Module.symvers
+Mkfile.old
+dkms.conf
+
+*.o
+.DS_Store
+.*.swp
+/openwrt-18.06/env
+/openwrt-18.06/.config
+/openwrt-18.06/.config.old
+/openwrt-18.06/bin
+/openwrt-18.06/build_dir
+/openwrt-18.06/staging_dir
+/openwrt-18.06/tmp
+/openwrt-18.06/logs
+/openwrt-18.06/files
+/openwrt-18.06/package/feeds
+/openwrt-18.06/feeds
+/openwrt-18.06/dl/*
+
+key-build*
+*.orig
+*.rej
+*~
+.#*
+*#
+.emacs.desktop*
+TAGS*~
+git-src
+*.files
+*.out
+tags
+linux-4.14.90-dev/linux-4.14.90/user_headers/

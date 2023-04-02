@@ -1,0 +1,179 @@
+Index: hostapd-2019-08-08-ca8c2bd2/hostapd/config_file.c
+===================================================================
+--- hostapd-2019-08-08-ca8c2bd2.orig/hostapd/config_file.c	2020-11-11 15:57:27.854889981 +0800
++++ hostapd-2019-08-08-ca8c2bd2/hostapd/config_file.c	2020-11-11 15:57:27.846889981 +0800
+@@ -3292,6 +3292,8 @@
+ 			conf->preamble = LONG_PREAMBLE;
+ 	} else if (os_strcmp(buf, "ignore_broadcast_ssid") == 0) {
+ 		bss->ignore_broadcast_ssid = atoi(pos);
++	} else if (os_strcmp(buf, "conditionally_ignore_bcast_ssid") == 0) {
++		bss->conditionally_ignore_bcast_ssid = atoi(pos);
+ 	} else if (os_strcmp(buf, "no_probe_resp_if_max_sta") == 0) {
+ 		bss->no_probe_resp_if_max_sta = atoi(pos);
+ 	} else if (os_strcmp(buf, "wep_default_key") == 0) {
+Index: hostapd-2019-08-08-ca8c2bd2/src/ap/ap_config.h
+===================================================================
+--- hostapd-2019-08-08-ca8c2bd2.orig/src/ap/ap_config.h	2020-11-11 15:57:27.854889981 +0800
++++ hostapd-2019-08-08-ca8c2bd2/src/ap/ap_config.h	2020-11-11 15:57:27.846889981 +0800
+@@ -448,6 +448,7 @@
+ 
+ 	int ap_max_inactivity;
+ 	int ignore_broadcast_ssid;
++	int conditionally_ignore_bcast_ssid;
+ 	int no_probe_resp_if_max_sta;
+ 
+ 	int wmm_enabled;
+Index: hostapd-2019-08-08-ca8c2bd2/src/ap/ubus.c
+===================================================================
+--- hostapd-2019-08-08-ca8c2bd2.orig/src/ap/ubus.c	2020-11-11 15:57:27.854889981 +0800
++++ hostapd-2019-08-08-ca8c2bd2/src/ap/ubus.c	2020-11-11 15:58:22.818892288 +0800
+@@ -27,6 +27,7 @@
+ static struct ubus_context *ctx;
+ static struct blob_buf b;
+ static int ctx_ref;
++static uint32_t sf_adv_wl_wifi_ap_id = 0;
+ 
+ static inline struct hostapd_data *get_hapd_from_object(struct ubus_object *obj)
+ {
+@@ -152,6 +153,7 @@
+ 			struct blob_attr *msg)
+ {
+ 	struct hostapd_data *hapd = container_of(obj, struct hostapd_data, ubus.obj);
++	struct hostap_sta_driver_data data;
+ 	struct sta_info *sta;
+ 	void *list, *c;
+ 	char mac_buf[20];
+@@ -189,6 +191,9 @@
+ 			blobmsg_add_u32(&b, "", sta->rrm_enabled_capa[i]);
+ 		blobmsg_close_array(&b, r);
+ 		blobmsg_add_u32(&b, "aid", sta->aid);
++		if (hapd->conf->conditionally_ignore_bcast_ssid)
++			if (hostapd_drv_read_sta_data(hapd, &data, sta->addr) == 0)
++				blobmsg_add_u32(&b, "signal", data.signal);
+ #ifdef CONFIG_TAXONOMY
+ 		r = blobmsg_alloc_string_buffer(&b, "signature", 1024);
+ 		if (retrieve_sta_taxonomy(hapd, sta, r, 1024) > 0)
+@@ -1222,6 +1227,20 @@
+ 	obj->n_methods = bss_object_type.n_methods;
+ 	ret = ubus_add_object(ctx, obj);
+ 	hostapd_ubus_ref_inc();
++	if (hapd->conf->conditionally_ignore_bcast_ssid) {
++		if(!ubus_lookup_id(ctx, "sf_adv_wl_wifi_ap", &sf_adv_wl_wifi_ap_id)) {
++			blob_buf_init(&b, 0);
++			blobmsg_add_u32(&b, "id", obj->id);
++			blobmsg_add_u32(&b, "band",
++				hapd->iconf->hw_mode == HOSTAPD_MODE_IEEE80211A);
++			blobmsg_add_u32(&b, "freq", hapd->iface->freq);
++			blobmsg_add_string(&b, "mac", hapd->conf->bssid);
++			blobmsg_add_string(&b, "ssid", (&hapd->conf->ssid)->ssid);
++			//3 seconds for timeout
++			ubus_invoke(ctx, sf_adv_wl_wifi_ap_id,
++					"wifi_ap_connect", b.head, NULL, 0, 3000);
++		}
++	}
+ }
+ 
+ void hostapd_ubus_free_bss(struct hostapd_data *hapd)
+@@ -1233,6 +1252,15 @@
+ 	if (!ctx)
+ 		return;
+ 
++	if (hapd->conf->conditionally_ignore_bcast_ssid) {
++		if (!ubus_lookup_id(ctx, "sf_adv_wl_wifi_ap", &sf_adv_wl_wifi_ap_id)) {
++			blob_buf_init(&b, 0);
++			blobmsg_add_u32(&b, "id", obj->id);
++			ubus_invoke(ctx, sf_adv_wl_wifi_ap_id,
++					"wifi_ap_remove", b.head, NULL, 0, 3000);
++		}
++	}
++
+ 	if (obj->id) {
+ 		ubus_remove_object(ctx, obj);
+ 		hostapd_ubus_ref_dec();
+@@ -1261,6 +1289,18 @@
+ 	ureq->resp = ret;
+ }
+ 
++static void wifi_ap_probe_req_cb(struct ubus_request *req, int type, struct blob_attr *msg)
++{
++	struct blob_attr *tb[1];
++	const struct blobmsg_policy probe_req_policy[] = {
++		{ .name = "ret", .type = BLOBMSG_TYPE_INT32 },
++	};
++
++	blobmsg_parse(probe_req_policy, ARRAY_SIZE(probe_req_policy), tb, blob_data(msg), blob_len(msg));
++
++	*(int *)req->priv = blobmsg_get_u32(tb[0]);
++}
++
+ int hostapd_ubus_handle_event(struct hostapd_data *hapd, struct hostapd_ubus_request *req)
+ {
+ 	struct ubus_banned_client *ban;
+@@ -1272,6 +1312,7 @@
+ 	const char *type = "mgmt";
+ 	struct ubus_event_req ureq = {};
+ 	const u8 *addr;
++	int ret = 0;
+ 
+ 	if (req->mgmt_frame)
+ 		addr = req->mgmt_frame->sa;
+@@ -1300,8 +1341,38 @@
+ 		}
+ 	}
+ 
++	if (hapd->conf->conditionally_ignore_bcast_ssid
++				&& req->type == HOSTAPD_UBUS_PROBE_REQ) {
++		if (ctx && !ubus_lookup_id(ctx, "sf_adv_wl_wifi_ap", &sf_adv_wl_wifi_ap_id)) {
++			blob_buf_init(&b, 0);
++			blobmsg_add_macaddr(&b, "address", addr);
++			if (req->mgmt_frame)
++				blobmsg_add_macaddr(&b, "target", req->mgmt_frame->da);
++			if (req->ssi_signal)
++				blobmsg_add_u32(&b, "signal", req->ssi_signal);
++			blobmsg_add_u32(&b, "freq", hapd->iface->freq);
++			blobmsg_add_u32(&b, "objid", (&hapd->ubus.obj)->id);
++			ubus_invoke(ctx, sf_adv_wl_wifi_ap_id,
++					"wifi_ap_probe_req", b.head,
++					wifi_ap_probe_req_cb, &ret, 1000);
++
++			if (ret == UBUS_STATUS_UNKNOWN_ERROR) {
++				/* bss not found */
++				blob_buf_init(&b, 0);
++				blobmsg_add_u32(&b, "id", (&hapd->ubus.obj)->id);
++				blobmsg_add_u32(&b, "band",
++						hapd->iconf->hw_mode == HOSTAPD_MODE_IEEE80211A);
++				blobmsg_add_u32(&b, "freq", hapd->iface->freq);
++				blobmsg_add_string(&b, "mac", hapd->conf->bssid);
++				blobmsg_add_string(&b, "ssid", (&hapd->conf->ssid)->ssid);
++				ubus_invoke(ctx, sf_adv_wl_wifi_ap_id,
++						"wifi_ap_connect", b.head, NULL, 0, 1000);
++			}
++		}
++	}
++
+ 	if (!hapd->ubus.obj.has_subscribers)
+-		return WLAN_STATUS_SUCCESS;
++		goto out;
+ 
+ 	if (req->type < ARRAY_SIZE(types))
+ 		type = types[req->type];
+@@ -1361,7 +1432,7 @@
+ 	}
+ 
+ 	if (ubus_notify_async(ctx, &hapd->ubus.obj, type, b.head, &ureq.nreq))
+-		return WLAN_STATUS_SUCCESS;
++		goto out;
+ 
+ 	ureq.nreq.status_cb = ubus_event_cb;
+ 	ubus_complete_request(ctx, &ureq.nreq.req, 100);
+@@ -1369,6 +1440,10 @@
+ 	if (ureq.resp)
+ 		return ureq.resp;
+ 
++out:
++	if (hapd->conf->conditionally_ignore_bcast_ssid)
++		return ret;
++
+ 	return WLAN_STATUS_SUCCESS;
+ }
+ 

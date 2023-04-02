@@ -1,0 +1,100 @@
+Index: hostapd-2019-08-08-ca8c2bd2/hostapd/config_file.c
+===================================================================
+--- hostapd-2019-08-08-ca8c2bd2.orig/hostapd/config_file.c	2020-11-11 14:08:52.650616565 +0800
++++ hostapd-2019-08-08-ca8c2bd2/hostapd/config_file.c	2020-11-11 14:12:13.350624987 +0800
+@@ -2472,6 +2472,8 @@
+ 		bss->ap_max_inactivity = atoi(pos);
+ 	} else if (os_strcmp(buf, "skip_inactivity_poll") == 0) {
+ 		bss->skip_inactivity_poll = atoi(pos);
++	} else if (os_strcmp(buf, "max_all_num_sta") == 0) {
++		conf->max_all_num_sta = atoi(pos);
+ 	} else if (os_strcmp(buf, "country_code") == 0) {
+ 		os_memcpy(conf->country, pos, 2);
+ 	} else if (os_strcmp(buf, "country3") == 0) {
+Index: hostapd-2019-08-08-ca8c2bd2/src/ap/ap_config.c
+===================================================================
+--- hostapd-2019-08-08-ca8c2bd2.orig/src/ap/ap_config.c	2020-11-11 14:08:52.670616566 +0800
++++ hostapd-2019-08-08-ca8c2bd2/src/ap/ap_config.c	2020-11-11 14:13:19.622627768 +0800
+@@ -206,6 +206,7 @@
+ 	hostapd_config_defaults_bss(bss);
+ 
+ 	conf->num_bss = 1;
++	conf->max_all_num_sta = MAX_STA_COUNT;
+ 
+ 	conf->beacon_int = 100;
+ 	conf->rts_threshold = -2; /* use driver default: 2347 */
+Index: hostapd-2019-08-08-ca8c2bd2/src/ap/ap_config.h
+===================================================================
+--- hostapd-2019-08-08-ca8c2bd2.orig/src/ap/ap_config.h	2020-11-11 14:08:52.670616566 +0800
++++ hostapd-2019-08-08-ca8c2bd2/src/ap/ap_config.h	2020-11-11 14:14:04.950629671 +0800
+@@ -897,6 +897,7 @@
+ 	unsigned int track_sta_max_num;
+ 	unsigned int track_sta_max_age;
+ 
++	int max_all_num_sta;/*  to limit the linked stations number */
+ 	char country[3]; /* first two octets: country code as described in
+ 			  * ISO/IEC 3166-1. Third octet:
+ 			  * ' ' (ascii 32): all environments
+Index: hostapd-2019-08-08-ca8c2bd2/src/ap/beacon.c
+===================================================================
+--- hostapd-2019-08-08-ca8c2bd2.orig/src/ap/beacon.c	2020-11-11 14:08:52.614616563 +0800
++++ hostapd-2019-08-08-ca8c2bd2/src/ap/beacon.c	2020-11-11 14:16:10.022634919 +0800
+@@ -953,7 +953,8 @@
+ 	if (hapd->conf->no_probe_resp_if_max_sta &&
+ 	    is_multicast_ether_addr(mgmt->da) &&
+ 	    is_multicast_ether_addr(mgmt->bssid) &&
+-	    hapd->num_sta >= hapd->conf->max_num_sta &&
++	    (hapd->num_sta >= hapd->conf->max_num_sta ||
++	     hapd->iface->all_num_sta >= hapd->iconf->max_all_num_sta)&&
+ 	    !ap_get_sta(hapd, mgmt->sa)) {
+ 		wpa_printf(MSG_MSGDUMP, "%s: Ignore Probe Request from " MACSTR
+ 			   " since no room for additional STA",
+Index: hostapd-2019-08-08-ca8c2bd2/src/ap/hostapd.h
+===================================================================
+--- hostapd-2019-08-08-ca8c2bd2.orig/src/ap/hostapd.h	2020-11-11 14:08:52.614616563 +0800
++++ hostapd-2019-08-08-ca8c2bd2/src/ap/hostapd.h	2020-11-11 14:17:01.686637088 +0800
+@@ -495,6 +495,8 @@
+ 
+ 	u16 hw_flags;
+ 
++	int all_num_sta;
++
+ 	/* Number of associated Non-ERP stations (i.e., stations using 802.11b
+ 	 * in 802.11g BSS) */
+ 	int num_sta_non_erp;
+Index: hostapd-2019-08-08-ca8c2bd2/src/ap/sta_info.c
+===================================================================
+--- hostapd-2019-08-08-ca8c2bd2.orig/src/ap/sta_info.c	2020-11-11 14:08:52.654616565 +0800
++++ hostapd-2019-08-08-ca8c2bd2/src/ap/sta_info.c	2020-11-11 14:20:06.846644858 +0800
+@@ -188,6 +188,7 @@
+ 			~BIT((sta->aid - 1) % 32);
+ 
+ 	hapd->num_sta--;
++	hapd->iface->all_num_sta--;
+ 	if (sta->nonerp_set) {
+ 		sta->nonerp_set = 0;
+ 		hapd->iface->num_sta_non_erp--;
+@@ -719,10 +720,12 @@
+ 		return sta;
+ 
+ 	wpa_printf(MSG_DEBUG, "  New STA");
+-	if (hapd->num_sta >= hapd->conf->max_num_sta) {
++	if (hapd->num_sta >= hapd->conf->max_num_sta ||
++				hapd->iface->all_num_sta >= hapd->iconf->max_all_num_sta) {
+ 		/* FIX: might try to remove some old STAs first? */
+-		wpa_printf(MSG_DEBUG, "no more room for new STAs (%d/%d)",
+-			   hapd->num_sta, hapd->conf->max_num_sta);
++		wpa_printf(MSG_DEBUG, "no more room for new STAs (%d/%d), (%d/%d)",
++			   hapd->num_sta, hapd->conf->max_num_sta,
++			   hapd->iface->all_num_sta, hapd->iconf->max_all_num_sta);
+ 		return NULL;
+ 	}
+ 
+@@ -763,6 +766,7 @@
+ 	sta->next = hapd->sta_list;
+ 	hapd->sta_list = sta;
+ 	hapd->num_sta++;
++	hapd->iface->all_num_sta++;
+ 	ap_sta_hash_add(hapd, sta);
+ 	ap_sta_remove_in_other_bss(hapd, sta);
+ 	sta->last_seq_ctrl = WLAN_INVALID_MGMT_SEQ;
