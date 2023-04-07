@@ -5,7 +5,7 @@ define Download/qca99x0-board
   URL:=https://github.com/kvalo/ath10k-firmware/tree/master/QCA99X0/hw2.0
   URL_FILE:=board-2.bin
   FILE:=$(QCA99X0_BOARD_FILE)
-  HASH:=8fad645f663ba2a0540644d3b2cef0c7db683859a64a6371982815e9d0ec5825
+  HASH:=6a8463cfc38ffb732294e0210e39af853c83b912058a64dcbb3f27f605c6a1f9
 endef
 $(eval $(call Download,qca99x0-board))
 
